@@ -74,7 +74,7 @@ initFrame:SetScript("OnEvent", function(self)
         clock = 150, fps = 70, ms = 70, gold = 150, xprep = 140, spec = 130,
         profession = 120, travel = 40, micromenu = 340, currency = 90, spacer = 40,
         durability = 70, combat = 105, profession2 = 120, greatvault = 100,
-        location = 140, coords = 70, crests = 160, ilvl = 70,
+        location = 140, coords = 70, crests = 160, ilvl = 70, ammo = 50,
         bags = 50,
     }
 
@@ -2985,6 +2985,23 @@ initFrame:SetScript("OnEvent", function(self)
                       end },
                     MkToggle("Show Icon", "showIcon", "Shows the currency icon next to the amount."),
                     MkToggleOn("Show Description", "showDescription", "Shows the currency's description text in the tooltip. Turn off for a compact tooltip with just the name and the amount."),
+                }
+            elseif b.type == "ammo" then
+                typeRows = {
+                    MkToggleOn("Show Icon", "showIcon", "Shows the ammo or soul shard icon next to the count."),
+                    { type = "slider", text = "Low Threshold", min = 0, max = 1000, step = 1,
+                      tooltip = "Colors the count once it drops to this amount or below. 0 turns it off.",
+                      getValue = function() return s.lowThreshold or 0 end,
+                      setValue = function(v) s.lowThreshold = v; Apply() end },
+                    { type = "colorpicker", text = "Low Color",
+                      getValue = function()
+                          local c = s.lowColor
+                          if c then return c.r, c.g, c.b end
+                          return 1, 0.25, 0.25
+                      end,
+                      setValue = function(r, g, b) s.lowColor = { r = r, g = g, b = b }; Apply() end,
+                      disabled = function() return (s.lowThreshold or 0) == 0 end,
+                      disabledTooltip = "Low Threshold" },
                 }
             elseif b.type == "crests" then
                 typeRows = {

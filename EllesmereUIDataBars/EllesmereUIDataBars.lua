@@ -271,6 +271,15 @@ if EllesmereUI.IS_FOREVER then
         if ns.BLOCK_TYPES[i].key == "greatvault" then table.remove(ns.BLOCK_TYPES, i) end
     end
     ns.BLOCK_DEFAULTS.greatvault = nil
+    -- Forever-only block: Blocks\Ammo.lua registers its factory only there.
+    for i = 1, #ns.BLOCK_TYPES do
+        if ns.BLOCK_TYPES[i].key == "spacer" then
+            table.insert(ns.BLOCK_TYPES, i, { key = "ammo", label = "Ammo / Soul Shards" })
+            break
+        end
+    end
+    -- lowThreshold 0 = off; lowColor nil = red (Blocks\Ammo.lua)
+    ns.BLOCK_DEFAULTS.ammo = { showIcon = true, lowThreshold = 0 }
 end
 
 local DeepCopy = EllesmereUI.Lite.DeepCopy

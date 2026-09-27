@@ -27,6 +27,7 @@ Blocks\Crests.lua
 Blocks\ItemLevel.lua
 Blocks\GreatVault.lua
 Blocks\Audio.lua
+Blocks\Ammo.lua
 Blocks\LDB.lua
 Blocks\Spacer.lua
 
