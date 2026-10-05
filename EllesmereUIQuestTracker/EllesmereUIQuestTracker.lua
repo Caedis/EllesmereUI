@@ -76,6 +76,19 @@ local QT_DEFAULTS = {
             autoTurnIn           = false,
             autoTurnInShiftSkip  = true,
             questItemHotkey      = nil,
+
+            -- Sorting: "default" + "mixed" leaves Blizzard's order alone.
+            questSortMode        = "default",
+            questSortCompleted   = "mixed",
+
+            -- Filters: untrack matching quests, re-track when they pass.
+            -- Master toggle gates the per-filter choices below.
+            filterEnabled        = false,
+            filterZone           = true,
+            filterCompleted      = false,
+            filterTrivial        = false,
+            filterOldExpansion   = false,
+            filterRepeatable     = false,
         },
     },
 }
@@ -194,6 +207,7 @@ _G._EQT_RefreshAll = function()
     -- profile's key stays overridden -- taken from whatever the player really
     -- has bound there -- and the incoming profile's key is never laid down.
     if EQT.ApplyQuestItemHotkey then EQT.ApplyQuestItemHotkey() end
+    if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
 end
 
 -------------------------------------------------------------------------------

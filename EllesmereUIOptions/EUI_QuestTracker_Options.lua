@@ -360,6 +360,60 @@ initFrame:SetScript("OnEvent", function(self)
         y = y - 10
         end -- not STOCK
 
+        -- -- TRACKING --------------------------------------------------------
+        -- Sorting and filters edit the watch list; filtered quests are
+        -- untracked and come back once they pass again.
+        _, h = W:SectionHeader(parent, "TRACKING", y); y = y - h
+
+        local function ApplyWatches()
+            if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
+        end
+        local function FilterRow(key, label)
+            return { type="toggle", label=label,
+                get=function() return Cfg(key) or false end,
+                set=function(v) Set(key, v); ApplyWatches() end }
+        end
+
+        -- Sort Quests (+ completed placement cog) | Filter Quests (+ filters cog)
+        row, h = W:DualRow(parent, y,
+            { type="dropdown", text="Sort Quests",
+              tooltip="Reorders your tracked quests. Default keeps Blizzard's order, which sorts by distance when you change zones.",
+              values = { default = "Default", log = "Quest Log Order", level = "Level", name = "Name" },
+              order  = { "default", "log", "level", "name" },
+              getValue=function() return Cfg("questSortMode") or "default" end,
+              setValue=function(v) Set("questSortMode", v); ApplyWatches() end },
+            { type="toggle", text="Filter Quests",
+              tooltip="Untracks quests that match the filters in the cog and tracks them again once they no longer match. Tracking a quest yourself keeps it tracked.",
+              getValue=function() return Cfg("filterEnabled") or false end,
+              setValue=function(v) Set("filterEnabled", v); ApplyWatches(); EllesmereUI:RefreshPage() end })
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildInlineCog(row._leftRegion, {
+                title = "Sort Settings",
+                rows = {
+                    { type="dropdown", label="Completed Quests",
+                      values = { mixed = "Mixed In", top = "Top", bottom = "Bottom" },
+                      order  = { "mixed", "top", "bottom" },
+                      get=function() return Cfg("questSortCompleted") or "mixed" end,
+                      set=function(v) Set("questSortCompleted", v); ApplyWatches() end },
+                },
+            })
+            EllesmereUI.BuildInlineCog(row._rightRegion, {
+                disabled = function() return not Cfg("filterEnabled") end,
+                disabledTooltip = "Filter Quests",
+                title = "Filter Settings",
+                rows = {
+                    FilterRow("filterZone", "Current Zone Only"),
+                    FilterRow("filterCompleted", "Hide Completed Quests"),
+                    FilterRow("filterTrivial", "Hide Low Level Quests"),
+                    FilterRow("filterOldExpansion", "Hide Older Expansion Quests"),
+                    FilterRow("filterRepeatable", "Hide Daily & Weekly Quests"),
+                },
+            })
+        end
+        y = y - h
+
+        y = y - 10
+
         -- -- EXTRAS ----------------------------------------------------------
         _, h = W:SectionHeader(parent, "EXTRAS", y); y = y - h
 

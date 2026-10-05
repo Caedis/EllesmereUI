@@ -2,8 +2,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 -- EllesmereUIQuestTracker_QoL.lua
 --
--- QoL layer: auto-accept, auto-turn-in, quest-item hotkey, SplashFrame
--- taint-free OnHide clone. Everything here is combat-gated.
+-- QoL layer: auto-accept, auto-turn-in, quest-item hotkey, quest sorting and
+-- filtering, SplashFrame taint-free OnHide clone. Everything here is
+-- combat-gated.
 --
 -- Ported verbatim from the previous custom tracker:
 --   * Auto-accept / auto-turn-in event machine (source L3421-3495)
@@ -49,11 +50,15 @@ end
 -------------------------------------------------------------------------------
 -- Blizzard's trivial flag never fires for a quest that scales to the player,
 -- so quests from an earlier expansion have a toggle of their own.
-local function IsIgnoredQuest(questID, isTrivial)
-    if isTrivial and Cfg("autoAcceptIgnoreTrivial") then return true end
-    if not Cfg("autoAcceptIgnoreOldExpansion") or not questID or questID == 0 then return false end
+local function IsOldExpansionQuest(questID)
+    if not questID or questID == 0 then return false end
     local expansion = GetQuestExpansion(questID)
     return expansion ~= nil and expansion >= 0 and expansion < GetServerExpansionLevel()
+end
+
+local function IsIgnoredQuest(questID, isTrivial)
+    if isTrivial and Cfg("autoAcceptIgnoreTrivial") then return true end
+    return Cfg("autoAcceptIgnoreOldExpansion") and IsOldExpansionQuest(questID) or false
 end
 
 local function InstallAutoQuests()
@@ -388,10 +393,211 @@ local function InstallQuestItemHotkey()
 end
 
 -------------------------------------------------------------------------------
+-- Quest sorting and filtering. The tracker lists watched quests in
+-- watch-index order, so editing the watch list sorts and filters it without
+-- touching the tracker. Blizzard re-sorts by distance on zone change, so ours
+-- is re-applied after it. Frame is built on first enable and unregistered
+-- while both are off.
+-------------------------------------------------------------------------------
+local watchFrame
+local watchPending = false
+local justSorted = false
+local sortIDs, sortGroup, sortKey, sortRank = {}, {}, {}, {}
+local watched = {}
+
+local function SortMode() return Cfg("questSortMode") or "default" end
+local function SortCompleted() return Cfg("questSortCompleted") or "mixed" end
+local function SortOn() return SortMode() ~= "default" or SortCompleted() ~= "mixed" end
+
+-- A filter counts only while the master toggle is on.
+local function FilterCfg(k) return Cfg("filterEnabled") and Cfg(k) end
+
+local function FilterOn()
+    return FilterCfg("filterZone") or FilterCfg("filterCompleted") or FilterCfg("filterTrivial")
+        or FilterCfg("filterOldExpansion") or FilterCfg("filterRepeatable")
+end
+
+-- Per character: watch lists are per character, profiles may be shared.
+-- hidden = untracked by a filter, exempt = re-tracked by the player.
+local function CharDB()
+    local sv = _G.EllesmereUIQuestTrackerCharDB
+    if type(sv) ~= "table" then sv = {}; _G.EllesmereUIQuestTrackerCharDB = sv end
+    if type(sv.hidden) ~= "table" then sv.hidden = {} end
+    if type(sv.exempt) ~= "table" then sv.exempt = {} end
+    return sv
+end
+
+local function WatchesActive()
+    if SortOn() or FilterOn() then return true end
+    -- Leftovers from a filter that was turned off still need restoring.
+    local sv = _G.EllesmereUIQuestTrackerCharDB
+    if type(sv) ~= "table" then return false end
+    return (type(sv.hidden) == "table" and next(sv.hidden) ~= nil)
+        or (type(sv.exempt) == "table" and next(sv.exempt) ~= nil)
+end
+
+local function IsFiltered(questID, superID)
+    if questID == superID then return false end
+    local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
+    local info = logIndex and C_QuestLog.GetInfo(logIndex)
+    if not info then return false end
+    if FilterCfg("filterCompleted") and C_QuestLog.IsComplete(questID) then return true end
+    if FilterCfg("filterTrivial") and C_QuestLog.IsQuestTrivial(questID) then return true end
+    if FilterCfg("filterOldExpansion") and IsOldExpansionQuest(questID) then return true end
+    if FilterCfg("filterRepeatable") and info.frequency and info.frequency ~= Enum.QuestFrequency.Default then return true end
+    if FilterCfg("filterZone") and not info.isOnMap then return true end
+    return false
+end
+
+local function ApplyFilter()
+    local db = CharDB()
+    local hidden, exempt = db.hidden, db.exempt
+    local on = FilterOn()
+    local superID = C_SuperTrack.GetSuperTrackedQuestID()
+    wipe(watched)
+    for i = 1, C_QuestLog.GetNumQuestWatches() do
+        local questID = C_QuestLog.GetQuestIDForQuestWatchIndex(i)
+        if questID then watched[questID] = true end
+    end
+    -- Exemptions end when the player untracks the quest.
+    for questID in pairs(exempt) do
+        if not on or not watched[questID] then exempt[questID] = nil end
+    end
+    for questID in pairs(hidden) do
+        if not C_QuestLog.GetLogIndexForQuestID(questID) then
+            hidden[questID] = nil
+        elseif watched[questID] then
+            -- The player tracked it again: leave it tracked.
+            hidden[questID] = nil
+            if on and IsFiltered(questID, superID) then exempt[questID] = true end
+        elseif not on or not IsFiltered(questID, superID) then
+            hidden[questID] = nil
+            C_QuestLog.AddQuestWatch(questID)
+        end
+    end
+    if not on then return end
+    for questID in pairs(watched) do
+        if not exempt[questID] and IsFiltered(questID, superID) then
+            hidden[questID] = true
+            C_QuestLog.RemoveQuestWatch(questID)
+        end
+    end
+end
+
+local function CompareQuests(a, b)
+    if sortGroup[a] ~= sortGroup[b] then return sortGroup[a] < sortGroup[b] end
+    if sortKey[a] ~= sortKey[b] then return sortKey[a] < sortKey[b] end
+    return sortRank[a] < sortRank[b]
+end
+
+local function ApplySort()
+    local mode, completed = SortMode(), SortCompleted()
+    wipe(sortGroup); wipe(sortKey); wipe(sortRank)
+    local count = 0
+    for i = 1, C_QuestLog.GetNumQuestWatches() do
+        local questID = C_QuestLog.GetQuestIDForQuestWatchIndex(i)
+        if questID then
+            count = count + 1
+            sortIDs[count] = questID
+            sortRank[questID] = count
+            local group = 1
+            if completed ~= "mixed" then
+                local done = C_QuestLog.IsComplete(questID) == true
+                group = ((completed == "top") == done) and 1 or 2
+            end
+            sortGroup[questID] = group
+            local key
+            if mode == "log" then
+                key = C_QuestLog.GetLogIndexForQuestID(questID) or 0
+            elseif mode == "level" or mode == "name" then
+                local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
+                local info = logIndex and C_QuestLog.GetInfo(logIndex)
+                if mode == "level" then
+                    key = info and (info.difficultyLevel or info.level) or 0
+                else
+                    key = info and info.title and info.title:lower() or ""
+                end
+            else
+                key = count
+            end
+            sortKey[questID] = key
+        end
+    end
+    for i = #sortIDs, count + 1, -1 do sortIDs[i] = nil end
+    table.sort(sortIDs, CompareQuests)
+
+    -- AddQuestWatch inserts at the top, so re-add the out-of-place head in
+    -- reverse; the already-correct tail is left alone.
+    local last
+    for i = count, 1, -1 do
+        if sortRank[sortIDs[i]] ~= i then last = i; break end
+    end
+    if not last then justSorted = false; return end
+    -- ponytail: still out of order right after our own rebuild means the
+    -- insert order changed; skip one pass so the events cannot loop.
+    if justSorted then justSorted = false; return end
+    justSorted = true
+
+    local superID = C_SuperTrack.GetSuperTrackedQuestID()
+    for i = last, 1, -1 do
+        C_QuestLog.RemoveQuestWatch(sortIDs[i])
+        C_QuestLog.AddQuestWatch(sortIDs[i])
+    end
+    if superID and superID ~= 0 and C_SuperTrack.GetSuperTrackedQuestID() ~= superID then
+        C_SuperTrack.SetSuperTrackedQuestID(superID)
+    end
+end
+
+local function ApplyWatches()
+    watchPending = false
+    if InCombatLockdown() then
+        watchFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        return
+    end
+    watchFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    ApplyFilter()
+    if SortOn() then ApplySort() end
+    -- Last pass after everything was turned off: put the frame to sleep.
+    if not WatchesActive() then watchFrame:UnregisterAllEvents() end
+end
+
+local function QueueWatches()
+    if watchPending then return end
+    watchPending = true
+    C_Timer.After(0, ApplyWatches)
+end
+
+-- Options / profile entry point.
+function EQT.ApplyQuestWatches()
+    local on = WatchesActive()
+    if not watchFrame then
+        if not on then return end
+        watchFrame = CreateFrame("Frame")
+        watchFrame:SetScript("OnEvent", QueueWatches)
+    end
+    watchFrame:UnregisterAllEvents()
+    justSorted = false
+    if not on then return end
+    watchFrame:RegisterEvent("QUEST_WATCH_LIST_CHANGED")
+    -- Blizzard's distance sort and the current map change on these; our
+    -- deferred pass lands after the sort.
+    watchFrame:RegisterEvent("ZONE_CHANGED")
+    watchFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+    -- Objective progress can flip a quest to complete.
+    if SortCompleted() ~= "mixed" or FilterCfg("filterCompleted") then
+        watchFrame:RegisterEvent("QUEST_WATCH_UPDATE")
+    end
+    -- Quests turn trivial as the player levels.
+    if FilterCfg("filterTrivial") then watchFrame:RegisterEvent("PLAYER_LEVEL_UP") end
+    QueueWatches()
+end
+
+-------------------------------------------------------------------------------
 -- Entry point
 -------------------------------------------------------------------------------
 function EQT.InitQoL()
     InstallSplashFrameFix()
     InstallAutoQuests()
     InstallQuestItemHotkey()
+    EQT.ApplyQuestWatches()
 end
