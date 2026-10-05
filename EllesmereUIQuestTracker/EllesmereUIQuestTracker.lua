@@ -89,6 +89,23 @@ local QT_DEFAULTS = {
             filterTrivial        = false,
             filterOldExpansion   = false,
             filterRepeatable     = false,
+
+            -- Tracks quests on the current map, untracks on leaving.
+            autoTrackZone        = false,
+
+            -- Progress feedback: alert sound keys ("none" = off), party chat.
+            soundObjective       = "none",
+            soundQuest           = "none",
+            announceProgress     = false,
+
+            -- Objective line colors (EllesmereUI style only).
+            objProgressColor     = false,
+            objDimCompleted      = false,
+            objDimAlpha          = 45,
+            -- Progress gradient stops (mirrored in Skin.lua ProgressRGB).
+            objStartR = 1.0, objStartG = 0.4, objStartB = 0.4,
+            objMidR   = 1.0, objMidG   = 1.0, objMidB   = 0.4,
+            objEndR   = 0.4, objEndG   = 1.0, objEndB   = 0.4,
         },
     },
 }
@@ -208,6 +225,7 @@ _G._EQT_RefreshAll = function()
     -- has bound there -- and the incoming profile's key is never laid down.
     if EQT.ApplyQuestItemHotkey then EQT.ApplyQuestItemHotkey() end
     if EQT.ApplyQuestWatches then EQT.ApplyQuestWatches() end
+    if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end
 end
 
 -------------------------------------------------------------------------------

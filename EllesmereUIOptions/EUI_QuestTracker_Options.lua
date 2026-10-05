@@ -347,14 +347,53 @@ initFrame:SetScript("OnEvent", function(self)
         end
         y = y - h
 
-        -- Line Color | spacer
+        -- Line Color | Color Objectives by Progress (+ color stops cog)
         do
             local lClass, lCustom, lAccent = MakeColorModeSwatches("line", { 1.0, 1.0, 1.0 })
-            _, h = W:DualRow(parent, y,
+            local r
+            r, h = W:DualRow(parent, y,
                 { type="multiSwatch", text="Line Color",
                   swatches = { lClass, lCustom, lAccent } },
-                { type="spacer" })
+                { type="toggle", text="Color Objectives by Progress",
+                  tooltip="Colors unfinished objectives from red to green as they progress.",
+                  getValue=function() return Cfg("objProgressColor") or false end,
+                  setValue=function(v) Set("objProgressColor", v); RefreshAll(); EllesmereUI:RefreshPage() end })
+            -- Defaults must mirror ProgressRGB in EllesmereUIQuestTracker_Skin.lua.
+            local function Stop(label, prefix, dr, dg, db)
+                return { type="colorpicker", label=label,
+                    get=function() return Cfg(prefix .. "R") or dr, Cfg(prefix .. "G") or dg, Cfg(prefix .. "B") or db end,
+                    set=function(cr, cg, cb) Set(prefix .. "R", cr); Set(prefix .. "G", cg); Set(prefix .. "B", cb); RefreshAll() end }
+            end
+            EllesmereUI.BuildInlineCog(r._rightRegion, {
+                disabled = function() return not Cfg("objProgressColor") end,
+                disabledTooltip = "Color Objectives by Progress",
+                title = "Progress Colors",
+                rows = {
+                    Stop("Start Color", "objStart", 1.0, 0.4, 0.4),
+                    Stop("Halfway Color", "objMid", 1.0, 1.0, 0.4),
+                    Stop("End Color", "objEnd", 0.4, 1.0, 0.4),
+                },
+            })
         end
+        y = y - h
+
+        -- Dim Completed Objectives (+ opacity cog) | spacer
+        row, h = W:DualRow(parent, y,
+            { type="toggle", text="Dim Completed Objectives",
+              tooltip="Fades objective lines that are already done.",
+              getValue=function() return Cfg("objDimCompleted") or false end,
+              setValue=function(v) Set("objDimCompleted", v); RefreshAll(); EllesmereUI:RefreshPage() end },
+            { type="spacer" })
+        EllesmereUI.BuildInlineCog(row._leftRegion, {
+            disabled = function() return not Cfg("objDimCompleted") end,
+            disabledTooltip = "Dim Completed Objectives",
+            title = "Dim Settings",
+            rows = {
+                { type="slider", label="Opacity", min=10, max=100, step=5,
+                  get=function() return Cfg("objDimAlpha") or 45 end,
+                  set=function(v) Set("objDimAlpha", v); RefreshAll() end },
+            },
+        })
         y = y - h
 
         y = y - 10
@@ -410,6 +449,35 @@ initFrame:SetScript("OnEvent", function(self)
                 },
             })
         end
+        y = y - h
+
+        local function ApplyProgress()
+            if EQT.ApplyQuestProgress then EQT.ApplyQuestProgress() end
+        end
+
+        -- Auto Track Zone Quests | Announce Progress
+        _, h = W:DualRow(parent, y,
+            { type="toggle", text="Auto Track Zone Quests",
+              tooltip="Tracks quests on your current map and untracks them when you leave. Untracking one yourself keeps it untracked until you leave the zone.",
+              getValue=function() return Cfg("autoTrackZone") or false end,
+              setValue=function(v) Set("autoTrackZone", v); ApplyWatches() end },
+            { type="toggle", text="Announce Progress",
+              tooltip="Posts your quest progress to party or instance chat. Never in raids.",
+              getValue=function() return Cfg("announceProgress") or false end,
+              setValue=function(v) Set("announceProgress", v); ApplyProgress() end })
+        y = y - h
+
+        -- Objective Complete Sound | Quest Complete Sound
+        local sndValues, sndOrder = EllesmereUI.BuildSoundDropdownValues(EQT.Sounds())
+        -- Preview through the module so the peon FileDataIDs play correctly.
+        sndValues._menuOpts.iconOnClick = EQT.PlaySoundKey
+        _, h = W:DualRow(parent, y,
+            { type="dropdown", text="Objective Complete Sound", values=sndValues, order=sndOrder,
+              getValue=function() return Cfg("soundObjective") or "none" end,
+              setValue=function(v) Set("soundObjective", v); ApplyProgress() end },
+            { type="dropdown", text="Quest Complete Sound", values=sndValues, order=sndOrder,
+              getValue=function() return Cfg("soundQuest") or "none" end,
+              setValue=function(v) Set("soundQuest", v); ApplyProgress() end })
         y = y - h
 
         y = y - 10
