@@ -417,8 +417,9 @@ initFrame:SetScript("OnEvent", function(self)
         row, h = W:DualRow(parent, y,
             { type="dropdown", text="Sort Quests",
               tooltip="Reorders your tracked quests. Default keeps Blizzard's order, which sorts by distance when you change zones.",
-              values = { default = "Default", log = "Quest Log Order", level = "Level", name = "Name" },
-              order  = { "default", "log", "level", "name" },
+              values = { default = "Default", log = "Quest Log Order", zone = "Zone", level = "Level",
+                         name = "Name", progress = "Progress", type = "Quest Type" },
+              order  = { "default", "log", "zone", "level", "name", "progress", "type" },
               getValue=function() return Cfg("questSortMode") or "default" end,
               setValue=function(v) Set("questSortMode", v); ApplyWatches() end },
             { type="toggle", text="Filter Quests",
@@ -434,6 +435,17 @@ initFrame:SetScript("OnEvent", function(self)
                       order  = { "mixed", "top", "bottom" },
                       get=function() return Cfg("questSortCompleted") or "mixed" end,
                       set=function(v) Set("questSortCompleted", v); ApplyWatches() end },
+                    { type="dropdown", label="Then By",
+                      values = { none = "None", zone = "Zone", level = "Level", name = "Name",
+                                 progress = "Progress", type = "Quest Type" },
+                      order  = { "none", "zone", "level", "name", "progress", "type" },
+                      disabled=function()
+                          local m = Cfg("questSortMode") or "default"
+                          return m == "default" or m == "log"
+                      end,
+                      disabledTooltip="Requires Sort Quests set to something other than Default or Quest Log Order.", rawTooltip=true,
+                      get=function() return Cfg("questSortThenBy") or "none" end,
+                      set=function(v) Set("questSortThenBy", v); ApplyWatches() end },
                 },
             })
             EllesmereUI.BuildInlineCog(row._rightRegion, {

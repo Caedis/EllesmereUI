@@ -80,6 +80,7 @@ local QT_DEFAULTS = {
             -- Sorting: "default" + "mixed" leaves Blizzard's order alone.
             questSortMode        = "default",
             questSortCompleted   = "mixed",
+            questSortThenBy      = "none",
 
             -- Filters: untrack matching quests, re-track when they pass.
             -- Master toggle gates the per-filter choices below.

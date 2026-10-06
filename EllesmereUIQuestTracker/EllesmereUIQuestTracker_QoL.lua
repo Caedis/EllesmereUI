@@ -402,11 +402,17 @@ end
 local watchFrame
 local watchPending = false
 local justSorted = false
-local sortIDs, sortGroup, sortKey, sortRank = {}, {}, {}, {}
+local sortIDs, sortGroup, sortKey, sortKey2, sortRank = {}, {}, {}, {}, {}
 local watched = {}
 
 local function SortMode() return Cfg("questSortMode") or "default" end
 local function SortCompleted() return Cfg("questSortCompleted") or "mixed" end
+-- Secondary key; ignored when the primary is already unique per quest.
+local function SortThenBy()
+    local mode = SortMode()
+    if mode == "default" or mode == "log" then return "none" end
+    return Cfg("questSortThenBy") or "none"
+end
 local function SortOn() return SortMode() ~= "default" or SortCompleted() ~= "mixed" end
 
 -- A filter counts only while the master toggle is on.
@@ -542,12 +548,77 @@ end
 local function CompareQuests(a, b)
     if sortGroup[a] ~= sortGroup[b] then return sortGroup[a] < sortGroup[b] end
     if sortKey[a] ~= sortKey[b] then return sortKey[a] < sortKey[b] end
+    if sortKey2[a] ~= sortKey2[b] then return sortKey2[a] < sortKey2[b] end
     return sortRank[a] < sortRank[b]
 end
 
+local function SortUses(key) return SortMode() == key or SortThenBy() == key end
+
+-- Quest log section (zone / category header) index per quest; rebuilt by
+-- the sort pass only while a Zone key is in use.
+local zoneOf = {}
+local function BuildZoneMap()
+    wipe(zoneOf)
+    local header = 0
+    for i = 1, C_QuestLog.GetNumQuestLogEntries() do
+        local info = C_QuestLog.GetInfo(i)
+        if info then
+            if info.isHeader then header = i
+            elseif info.questID then zoneOf[info.questID] = header end
+        end
+    end
+end
+
+-- Lower sorts first. Recurring = dailies / weeklies.
+local QC = Enum.QuestClassification
+local TYPE_RANK = {
+    [QC.Campaign] = 1, [QC.Legendary] = 2, [QC.Important] = 3, [QC.Meta] = 4,
+    [QC.Questline] = 5, [QC.Normal] = 6, [QC.Recurring] = 7,
+}
+
+local function SortKeyFor(mode, questID, rank)
+    if mode == "zone" then
+        return zoneOf[questID] or 0
+    elseif mode == "progress" then
+        -- Most complete first: negated share of all objective counts.
+        local objectives = C_QuestLog.GetQuestObjectives(questID)
+        local have, need = 0, 0
+        if objectives then
+            for _, obj in ipairs(objectives) do
+                local req = obj.numRequired
+                if type(req) == "number" and req > 0 then
+                    have, need = have + math.min(obj.numFulfilled or 0, req), need + req
+                end
+            end
+        end
+        if C_QuestLog.IsComplete(questID) then return -1 end
+        return need > 0 and -(have / need) or 0
+    elseif mode == "type" then
+        local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
+        local info = logIndex and C_QuestLog.GetInfo(logIndex)
+        if not info then return 6 end
+        local r = TYPE_RANK[info.questClassification] or 6
+        if r == 6 and info.frequency and info.frequency ~= Enum.QuestFrequency.Default then r = 7 end
+        return r
+    elseif mode == "log" then
+        return C_QuestLog.GetLogIndexForQuestID(questID) or 0
+    elseif mode == "level" or mode == "name" then
+        local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
+        local info = logIndex and C_QuestLog.GetInfo(logIndex)
+        if mode == "level" then
+            return info and (info.difficultyLevel or info.level) or 0
+        end
+        return info and info.title and info.title:lower() or ""
+    elseif mode == "none" then
+        return 0
+    end
+    return rank
+end
+
 local function ApplySort()
-    local mode, completed = SortMode(), SortCompleted()
-    wipe(sortGroup); wipe(sortKey); wipe(sortRank)
+    local mode, completed, thenBy = SortMode(), SortCompleted(), SortThenBy()
+    wipe(sortGroup); wipe(sortKey); wipe(sortKey2); wipe(sortRank)
+    if mode == "zone" or thenBy == "zone" then BuildZoneMap() end
     local count = 0
     for i = 1, C_QuestLog.GetNumQuestWatches() do
         local questID = C_QuestLog.GetQuestIDForQuestWatchIndex(i)
@@ -561,21 +632,8 @@ local function ApplySort()
                 group = ((completed == "top") == done) and 1 or 2
             end
             sortGroup[questID] = group
-            local key
-            if mode == "log" then
-                key = C_QuestLog.GetLogIndexForQuestID(questID) or 0
-            elseif mode == "level" or mode == "name" then
-                local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
-                local info = logIndex and C_QuestLog.GetInfo(logIndex)
-                if mode == "level" then
-                    key = info and (info.difficultyLevel or info.level) or 0
-                else
-                    key = info and info.title and info.title:lower() or ""
-                end
-            else
-                key = count
-            end
-            sortKey[questID] = key
+            sortKey[questID] = SortKeyFor(mode, questID, count)
+            sortKey2[questID] = SortKeyFor(thenBy, questID, count)
         end
     end
     for i = #sortIDs, count + 1, -1 do sortIDs[i] = nil end
@@ -588,8 +646,6 @@ local function ApplySort()
         if sortRank[sortIDs[i]] ~= i then last = i; break end
     end
     if not last then justSorted = false; return end
-    -- ponytail: still out of order right after our own rebuild means the
-    -- insert order changed; skip one pass so the events cannot loop.
     if justSorted then justSorted = false; return end
     justSorted = true
 
@@ -655,7 +711,7 @@ function EQT.ApplyQuestWatches()
     watchFrame:RegisterEvent("ZONE_CHANGED")
     watchFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     -- Objective progress can flip a quest to complete.
-    if SortCompleted() ~= "mixed" or FilterCfg("filterCompleted") then
+    if SortCompleted() ~= "mixed" or FilterCfg("filterCompleted") or SortUses("progress") then
         watchFrame:RegisterEvent("QUEST_WATCH_UPDATE")
     end
     -- Quests turn trivial as the player levels.
