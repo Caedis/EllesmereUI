@@ -470,7 +470,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- Auto Track Zone Quests | Announce Progress
         _, h = W:DualRow(parent, y,
             { type="toggle", text="Auto Track Zone Quests",
-              tooltip="Tracks quests on your current map and untracks them when you leave. Untracking one yourself keeps it untracked until you leave the zone.",
+              tooltip="Tracks quests in your current zone and untracks them when you leave. Untracking one yourself keeps it untracked until you leave the zone.",
               getValue=function() return Cfg("autoTrackZone") or false end,
               setValue=function(v) Set("autoTrackZone", v); ApplyWatches() end },
             { type="toggle", text="Announce Progress",

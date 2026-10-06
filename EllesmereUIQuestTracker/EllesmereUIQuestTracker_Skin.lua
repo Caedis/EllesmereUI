@@ -837,8 +837,13 @@ local function ColorObjectiveLines(block)
             local r, g, b = 1, 1, 1
             if style then r, g, b = style.r, style.g, style.b end
             local req = obj.numRequired
-            if progress and not obj.finished and type(req) == "number" and req > 0 then
-                r, g, b = ProgressRGB((obj.numFulfilled or 0) / req)
+            if progress then
+                -- Finished lines take the End Color, not Blizzard's grey.
+                if obj.finished then
+                    r, g, b = ProgressRGB(1)
+                elseif type(req) == "number" and req > 0 then
+                    r, g, b = ProgressRGB((obj.numFulfilled or 0) / req)
+                end
             end
             fs:SetTextColor(r, g, b, (dim and obj.finished) and (EQT.Cfg("objDimAlpha") or 45) / 100 or 1)
             _objColored[fs] = true

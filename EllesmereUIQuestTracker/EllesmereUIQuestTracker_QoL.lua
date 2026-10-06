@@ -401,7 +401,8 @@ end
 -------------------------------------------------------------------------------
 local watchFrame
 local watchPending = false
-local justSorted = false
+local sortStuck = false  -- last rebuild did not take; see ApplySort
+local logUpdatePending = false
 local sortIDs, sortGroup, sortKey, sortKey2, sortRank = {}, {}, {}, {}, {}
 local watched = {}
 
@@ -456,6 +457,32 @@ local function FillWatched()
     end
 end
 
+-- Zone-level ancestor of a map (caves, buildings and micro-dungeons roll up
+-- to their zone). Map data is static, so results are cached for the session.
+local zoneMapCache = {}
+local function ZoneMap(mapID)
+    if not mapID or mapID == 0 then return nil end
+    local cached = zoneMapCache[mapID]
+    if cached ~= nil then return cached or nil end
+    local id, info = mapID, C_Map.GetMapInfo(mapID)
+    while info and info.mapType > Enum.UIMapType.Zone and info.parentMapID and info.parentMapID ~= 0 do
+        id = info.parentMapID
+        info = C_Map.GetMapInfo(id)
+    end
+    zoneMapCache[mapID] = id or false
+    return id
+end
+
+-- isOnMap misses quests without a map marker and quests seen from a child
+-- map, so the quest's own zone counts too.
+local function InCurrentZone(questID, info)
+    if info.isOnMap then return true end
+    local here = ZoneMap(C_Map.GetBestMapForUnit("player"))
+    if not here then return false end
+    return ZoneMap(GetQuestUiMapID(questID, true)) == here
+        or ZoneMap(GetQuestUiMapID(questID)) == here
+end
+
 local function IsFiltered(questID, superID)
     if questID == superID then return false end
     local logIndex = C_QuestLog.GetLogIndexForQuestID(questID)
@@ -465,7 +492,7 @@ local function IsFiltered(questID, superID)
     if FilterCfg("filterTrivial") and C_QuestLog.IsQuestTrivial(questID) then return true end
     if FilterCfg("filterOldExpansion") and IsOldExpansionQuest(questID) then return true end
     if FilterCfg("filterRepeatable") and info.frequency and info.frequency ~= Enum.QuestFrequency.Default then return true end
-    if FilterCfg("filterZone") and not info.isOnMap then return true end
+    if FilterCfg("filterZone") and not InCurrentZone(questID, info) then return true end
     return false
 end
 
@@ -501,7 +528,7 @@ local function ApplyFilter()
     end
 end
 
--- Tracks quests on the current map and untracks them again on leaving.
+-- Tracks quests in the current zone and untracks them again on leaving.
 local function ApplyAutoTrack()
     local db = CharDB()
     local hidden, auto, declined = db.hidden, db.auto, db.declined
@@ -520,7 +547,7 @@ local function ApplyAutoTrack()
         local info = C_QuestLog.GetInfo(i)
         if info and not info.isHeader and not info.isHidden and not info.isTask and not info.isBounty then
             local questID = info.questID
-            if on and info.isOnMap then
+            if on and InCurrentZone(questID, info) then
                 if free > 0 and not watched[questID] and not declined[questID]
                    and not hidden[questID] and not IsFiltered(questID, superID) then
                     auto[questID] = true
@@ -645,15 +672,25 @@ local function ApplySort()
     for i = count, 1, -1 do
         if sortRank[sortIDs[i]] ~= i then last = i; break end
     end
-    if not last then justSorted = false; return end
-    if justSorted then justSorted = false; return end
-    justSorted = true
+    if not last then sortStuck = false; return end
+    -- The previous rebuild did not produce its order: skip one pass so our
+    -- own watch events cannot loop.
+    if sortStuck then sortStuck = false; return end
 
     -- No super-track restore here: setting it from addon code taints the
     -- world map (see the removed OnClick hook in Skin.lua).
     for i = last, 1, -1 do
         C_QuestLog.RemoveQuestWatch(sortIDs[i])
         C_QuestLog.AddQuestWatch(sortIDs[i])
+    end
+    -- Read the order back; the guard only arms when it did not take.
+    local n = 0
+    for i = 1, C_QuestLog.GetNumQuestWatches() do
+        local questID = C_QuestLog.GetQuestIDForQuestWatchIndex(i)
+        if questID then
+            n = n + 1
+            if questID ~= sortIDs[n] then sortStuck = true; return end
+        end
     end
 end
 
@@ -677,7 +714,20 @@ local function QueueWatches()
     C_Timer.After(0, ApplyWatches)
 end
 
--- Options / profile entry point.
+-- QUEST_WATCH_UPDATE fires before the log holds the new counts, so the pass
+-- waits for the QUEST_LOG_UPDATE that follows it.
+local function OnWatchEvent(_, event)
+    if event == "QUEST_WATCH_UPDATE" then
+        logUpdatePending = true
+    elseif event == "QUEST_LOG_UPDATE" then
+        if not logUpdatePending then return end
+        logUpdatePending = false
+        QueueWatches()
+    else
+        QueueWatches()
+    end
+end
+
 -- These two events only drive Blizzard's distance sort on the tracker
 -- (ObjectiveTrackerFrameMixin:OnEvent), so a custom sort mode turns them off
 -- instead of fighting it. Re-registered when sorting returns to Default.
@@ -694,16 +744,17 @@ local function ApplyBlizzardSort()
     end
 end
 
+-- Options / profile entry point.
 function EQT.ApplyQuestWatches()
     ApplyBlizzardSort()
     local on = WatchesActive()
     if not watchFrame then
         if not on then return end
         watchFrame = CreateFrame("Frame")
-        watchFrame:SetScript("OnEvent", QueueWatches)
+        watchFrame:SetScript("OnEvent", OnWatchEvent)
     end
     watchFrame:UnregisterAllEvents()
-    justSorted = false
+    sortStuck, logUpdatePending = false, false
     if not on then return end
     watchFrame:RegisterEvent("QUEST_WATCH_LIST_CHANGED")
     -- The current map changes on these; with Default sort mode Blizzard's
@@ -713,6 +764,7 @@ function EQT.ApplyQuestWatches()
     -- Objective progress can flip a quest to complete.
     if SortCompleted() ~= "mixed" or FilterCfg("filterCompleted") or SortUses("progress") then
         watchFrame:RegisterEvent("QUEST_WATCH_UPDATE")
+        watchFrame:RegisterEvent("QUEST_LOG_UPDATE")
     end
     -- Quests turn trivial as the player levels.
     if FilterCfg("filterTrivial") then watchFrame:RegisterEvent("PLAYER_LEVEL_UP") end

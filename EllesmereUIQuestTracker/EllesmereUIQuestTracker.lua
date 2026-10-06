@@ -91,7 +91,7 @@ local QT_DEFAULTS = {
             filterOldExpansion   = false,
             filterRepeatable     = false,
 
-            -- Tracks quests on the current map, untracks on leaving.
+            -- Tracks quests in the current zone, untracks on leaving.
             autoTrackZone        = false,
 
             -- Progress feedback: alert sound keys ("none" = off), party chat.
