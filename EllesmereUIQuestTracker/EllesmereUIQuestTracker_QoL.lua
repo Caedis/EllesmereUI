@@ -466,30 +466,24 @@ local function FillWatched()
     end
 end
 
--- Zone-level ancestor of a map (caves, buildings and micro-dungeons roll up
--- to their zone). Map data is static, so results are cached for the session.
-local zoneMapCache = {}
-local function ZoneMap(mapID)
-    if not mapID or mapID == 0 then return nil end
-    local cached = zoneMapCache[mapID]
-    if cached ~= nil then return cached or nil end
-    local id, info = mapID, C_Map.GetMapInfo(mapID)
-    while info and info.mapType > Enum.UIMapType.Zone and info.parentMapID and info.parentMapID ~= 0 do
-        id = info.parentMapID
-        info = C_Map.GetMapInfo(id)
-    end
-    zoneMapCache[mapID] = id or false
-    return id
+-- "Current area". Retail: Blizzard's isOnMap (campaign quests are filed
+-- under campaign headers, and instances have maps). Forever: instances have
+-- no maps and isOnMap counts the parent zone's quests inside them, so the
+-- quest log header must name the zone the player is in, or the instance.
+-- Exact names only: a city is its own zone, so Orgrimmar is not Durotar.
+local USE_HEADERS = EllesmereUI.IS_FOREVER == true
+
+local function IsAreaHeader(title)
+    if not title then return false end
+    if title == GetRealZoneText() then return true end
+    return IsInInstance() and title == GetInstanceInfo()
 end
 
--- isOnMap misses quests without a map marker and quests seen from a child
--- map, so the quest's own zone counts too.
-local function InCurrentZone(questID, info)
-    if info.isOnMap then return true end
-    local here = ZoneMap(C_Map.GetBestMapForUnit("player"))
-    if not here then return false end
-    return ZoneMap(GetQuestUiMapID(questID, true)) == here
-        or ZoneMap(GetQuestUiMapID(questID)) == here
+local function HeaderTitle(logIndex)
+    for i = logIndex - 1, 1, -1 do
+        local info = C_QuestLog.GetInfo(i)
+        if info and info.isHeader then return info.title end
+    end
 end
 
 local function IsFiltered(questID, superID)
@@ -501,7 +495,11 @@ local function IsFiltered(questID, superID)
     if FilterCfg("filterTrivial") and C_QuestLog.IsQuestTrivial(questID) then return true end
     if FilterCfg("filterOldExpansion") and IsOldExpansionQuest(questID) then return true end
     if FilterCfg("filterRepeatable") and info.frequency and info.frequency ~= Enum.QuestFrequency.Default then return true end
-    if FilterCfg("filterZone") and not InCurrentZone(questID, info) then return true end
+    if FilterCfg("filterZone") then
+        local inArea
+        if USE_HEADERS then inArea = IsAreaHeader(HeaderTitle(logIndex)) else inArea = info.isOnMap end
+        if not inArea then return true end
+    end
     return false
 end
 
@@ -516,7 +514,9 @@ local function ApplyFilter()
         if not on or not watched[questID] then exempt[questID] = nil end
     end
     for questID in pairs(hidden) do
-        if not C_QuestLog.GetLogIndexForQuestID(questID) then
+        -- IsOnQuest, not a log index: collapsed headers and loading screens
+        -- hide indexes.
+        if not C_QuestLog.IsOnQuest(questID) then
             hidden[questID] = nil
         elseif watched[questID] then
             -- The player tracked it again: leave it tracked.
@@ -537,7 +537,8 @@ local function ApplyFilter()
     end
 end
 
--- Tracks quests in the current zone and untracks them again on leaving.
+-- Tracks quests in the current area (see USE_HEADERS) and untracks them
+-- again on leaving.
 local function ApplyAutoTrack()
     local db = CharDB()
     local hidden, auto, declined = db.hidden, db.auto, db.declined
@@ -552,11 +553,14 @@ local function ApplyAutoTrack()
         end
     end
     local free = Constants.QuestWatchConsts.MAX_QUEST_WATCHES - C_QuestLog.GetNumQuestWatches()
+    local inArea = false
     for i = 1, C_QuestLog.GetNumQuestLogEntries() do
         local info = C_QuestLog.GetInfo(i)
-        if info and not info.isHeader and not info.isHidden and not info.isTask and not info.isBounty then
+        if info and info.isHeader then
+            inArea = USE_HEADERS and IsAreaHeader(info.title)
+        elseif info and not info.isHidden and not info.isTask and not info.isBounty then
             local questID = info.questID
-            if on and InCurrentZone(questID, info) then
+            if on and (inArea or (not USE_HEADERS and info.isOnMap)) then
                 if free > 0 and not watched[questID] and not declined[questID]
                    and not hidden[questID] and not IsFiltered(questID, superID) then
                     auto[questID] = true
@@ -574,10 +578,10 @@ local function ApplyAutoTrack()
     end
     -- Quests that left the log.
     for questID in pairs(auto) do
-        if not C_QuestLog.GetLogIndexForQuestID(questID) then auto[questID] = nil end
+        if not C_QuestLog.IsOnQuest(questID) then auto[questID] = nil end
     end
     for questID in pairs(declined) do
-        if not on or not C_QuestLog.GetLogIndexForQuestID(questID) then declined[questID] = nil end
+        if not on or not C_QuestLog.IsOnQuest(questID) then declined[questID] = nil end
     end
 end
 
@@ -710,6 +714,8 @@ local function ApplyWatches()
         return
     end
     watchFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    -- Log not loaded yet (loading screens): nothing reliable to act on.
+    if C_QuestLog.GetNumQuestLogEntries() == 0 then return end
     ApplyFilter()
     ApplyAutoTrack()
     if SortOn() then ApplySort() end
@@ -770,6 +776,10 @@ function EQT.ApplyQuestWatches()
     -- distance sort also runs on them and our deferred pass lands after it.
     watchFrame:RegisterEvent("ZONE_CHANGED")
     watchFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+    -- Entering or leaving an instance ends on a loading screen.
+    if FilterCfg("filterZone") or Cfg("autoTrackZone") then
+        watchFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    end
     -- Objective progress can flip a quest to complete.
     if SortCompleted() ~= "mixed" or FilterCfg("filterCompleted") or SortUses("progress") then
         watchFrame:RegisterEvent("QUEST_WATCH_UPDATE")
